@@ -1,0 +1,17 @@
+{
+    "name": "recranet/guzzle-rate-limiter-middleware",
+    "description": "Thread-safe Guzzle rate limiter middleware using Symfony RateLimiter",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "guzzlehttp/guzzle": "^7.0",
+        "symfony/rate-limiter": "^6.4 || ^7.0",
+        "symfony/lock": "^6.4 || ^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Recranet\\GuzzleRateLimiterMiddleware\\": "src/"
+        }
+    }
+}
