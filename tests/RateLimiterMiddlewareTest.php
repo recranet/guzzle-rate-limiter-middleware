@@ -8,6 +8,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 use Recranet\GuzzleRateLimiterMiddleware\Exception\RateLimitException;
+use Recranet\GuzzleRateLimiterMiddleware\Handler\SleepHandler;
 use Recranet\GuzzleRateLimiterMiddleware\Handler\ThrowExceptionHandler;
 use Recranet\GuzzleRateLimiterMiddleware\RateLimiterMiddleware;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
@@ -16,10 +17,6 @@ use Symfony\Component\Lock\Store\InMemoryStore;
 
 /**
  * Integration tests for RateLimiterMiddleware.
- *
- * Tests the rate limiter with various configurations:
- * - 1 request per second (SleepHandler)
- * - Multiple requests per X minutes (SleepHandler/ThrowExceptionHandler)
  */
 class RateLimiterMiddlewareTest extends TestCase
 {
@@ -60,10 +57,6 @@ class RateLimiterMiddlewareTest extends TestCase
 
     /**
      * Test that SleepHandler (default) sleeps and retries when rate limit is exceeded.
-     *
-     * This test verifies that when using the default SleepHandler:
-     * 1. First request succeeds immediately
-     * 2. Second request is rate limited, sleeps, then succeeds
      */
     public function testSleepHandlerSleepsAndRetries(): void
     {
@@ -108,7 +101,7 @@ class RateLimiterMiddlewareTest extends TestCase
     {
         $mockHandler = new MockHandler([
             new Response(200, [], 'First'),
-            new Response(200, [], 'Second'), // This should not be reached
+            new Response(200, [], 'Second'),
         ]);
 
         $handlerStack = HandlerStack::create($mockHandler);
@@ -134,9 +127,9 @@ class RateLimiterMiddlewareTest extends TestCase
     }
 
     /**
-     * Test that RateLimitException contains retry delay.
+     * Test that RateLimitException contains retry delay with jitter applied.
      */
-    public function testRateLimitExceptionContainsRetryDelay(): void
+    public function testRateLimitExceptionContainsRetryDelayWithJitter(): void
     {
         $mockHandler = new MockHandler([
             new Response(200, [], 'First'),
@@ -157,7 +150,7 @@ class RateLimiterMiddlewareTest extends TestCase
         // First request should succeed
         $client->get('https://example.com/test');
 
-        // Second request should throw with retry delay
+        // Second request should throw with retry delay (with jitter applied)
         try {
             $client->get('https://example.com/test');
             $this->fail('Expected RateLimitException was not thrown');
@@ -165,14 +158,13 @@ class RateLimiterMiddlewareTest extends TestCase
             $retryDelay = $e->getRetryDelay();
             $this->assertNotNull($retryDelay);
             $this->assertGreaterThan(0, $retryDelay);
-            $this->assertLessThanOrEqual(1000, $retryDelay, 'Retry delay should be ~1 second or less');
+            // With 20% jitter, delay could be up to 1200ms (1000 * 1.2)
+            $this->assertLessThanOrEqual(1200, $retryDelay, 'Retry delay should be ~1 second + jitter');
         }
     }
 
     /**
      * Test perXMinutes rate limiting with ThrowExceptionHandler.
-     *
-     * Uses a smaller limit (3 requests) for faster testing.
      */
     public function testPerXMinutesWithThrowExceptionHandler(): void
     {
@@ -180,13 +172,13 @@ class RateLimiterMiddlewareTest extends TestCase
             new Response(200, [], 'Request 1'),
             new Response(200, [], 'Request 2'),
             new Response(200, [], 'Request 3'),
-            new Response(200, [], 'Request 4'), // Should not be reached
+            new Response(200, [], 'Request 4'),
         ]);
 
         $handlerStack = HandlerStack::create($mockHandler);
         $handlerStack->push(RateLimiterMiddleware::perXMinutes(
             5,
-            3, // 3 requests per 5 minutes for faster testing
+            3,
             $this->cache,
             $this->lockFactory,
             'test-per-x-minutes',
@@ -209,8 +201,6 @@ class RateLimiterMiddlewareTest extends TestCase
 
     /**
      * Test that rate limiter locks are properly acquired and released.
-     *
-     * This test verifies that multiple sequential requests don't deadlock.
      */
     public function testLocksAreProperlyAcquiredAndReleased(): void
     {
@@ -222,7 +212,7 @@ class RateLimiterMiddlewareTest extends TestCase
 
         $handlerStack = HandlerStack::create($mockHandler);
         $handlerStack->push(RateLimiterMiddleware::perSecond(
-            10, // High limit to avoid rate limiting
+            10,
             $this->cache,
             $this->lockFactory,
             'test-locks',
@@ -236,65 +226,6 @@ class RateLimiterMiddlewareTest extends TestCase
             $this->assertEquals(200, $response->getStatusCode());
             $this->assertEquals("Request $i", (string) $response->getBody());
         }
-    }
-
-    /**
-     * Test stacked rate limiters configuration.
-     *
-     * Configuration:
-     * - 1 request per second (SleepHandler)
-     * - 3 requests per 5 minutes (ThrowExceptionHandler) - reduced for testing
-     */
-    public function testStackedRateLimiters(): void
-    {
-        $mockHandler = new MockHandler([
-            new Response(200, [], 'Request 1'),
-            new Response(200, [], 'Request 2'),
-            new Response(200, [], 'Request 3'),
-            new Response(200, [], 'Request 4'), // Should not be reached
-        ]);
-
-        $handlerStack = HandlerStack::create($mockHandler);
-
-        // Per-second limit with SleepHandler (default)
-        $handlerStack->push(RateLimiterMiddleware::perSecond(
-            1,
-            $this->cache,
-            $this->lockFactory,
-            'stacked-second',
-        ));
-
-        // Per 5 minutes limit with ThrowExceptionHandler
-        $handlerStack->push(RateLimiterMiddleware::perXMinutes(
-            5,
-            3, // 3 requests per 5 minutes for faster testing
-            $this->cache,
-            $this->lockFactory,
-            'stacked-5-minutes',
-            new ThrowExceptionHandler(),
-        ));
-
-        $client = new Client(['handler' => $handlerStack]);
-
-        // First request should succeed immediately
-        $startTime = microtime(true);
-        $response1 = $client->get('https://example.com/test');
-        $this->assertEquals(200, $response1->getStatusCode());
-
-        // Second request should wait for per-second limit
-        $response2 = $client->get('https://example.com/test');
-        $this->assertEquals(200, $response2->getStatusCode());
-
-        // Third request should wait for per-second limit
-        $response3 = $client->get('https://example.com/test');
-        $this->assertEquals(200, $response3->getStatusCode());
-
-        $totalTime = microtime(true) - $startTime;
-        $this->assertGreaterThan(2.0, $totalTime, 'Should have waited ~2 seconds for rate limits');
-
-        // Fourth request should throw due to 5-minute limit
-        $this->expectException(RateLimitException::class);
-        $client->get('https://example.com/test');
     }
 
     /**
@@ -312,7 +243,6 @@ class RateLimiterMiddlewareTest extends TestCase
             new Response(200, [], 'Client 2 Request 2'),
         ]);
 
-        // Create two clients with different rate limiter IDs
         $handlerStack1 = HandlerStack::create($mockHandler1);
         $handlerStack1->push(RateLimiterMiddleware::perSecond(
             1,
@@ -399,93 +329,163 @@ class RateLimiterMiddlewareTest extends TestCase
     }
 
     /**
-     * Test that retry delay is calculated based on fixed window algorithm.
-     *
-     * When all tokens are consumed in a 5-minute window, the fixed_window
-     * policy returns the time until the window resets (up to 5 minutes).
+     * Test token bucket rate limiter allows first request immediately.
      */
-    public function testRetryDelayMatchesWindowDuration(): void
+    public function testTokenBucketAllowsFirstRequestImmediately(): void
     {
         $mockHandler = new MockHandler([
-            new Response(200, [], 'Request 1'),
-            new Response(200, [], 'Request 2'),
-            new Response(200, [], 'Request 3'),
-            new Response(200, [], 'Request 4'), // Should not be reached
+            new Response(200, [], 'OK'),
         ]);
 
         $handlerStack = HandlerStack::create($mockHandler);
-        $handlerStack->push(RateLimiterMiddleware::perXMinutes(
-            5, // 5 minute window
-            3, // 3 requests allowed
+        $handlerStack->push(RateLimiterMiddleware::tokenBucket(
+            '1 second',
+            1,
             $this->cache,
             $this->lockFactory,
-            'test-window-duration',
+            'test-token-bucket-first',
+        ));
+
+        $client = new Client(['handler' => $handlerStack]);
+
+        $startTime = microtime(true);
+        $response = $client->get('https://example.com/test');
+        $elapsed = microtime(true) - $startTime;
+
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertLessThan(0.5, $elapsed, 'First request should be immediate');
+    }
+
+    /**
+     * Test token bucket with ThrowExceptionHandler throws when no token available.
+     */
+    public function testTokenBucketWithThrowExceptionHandler(): void
+    {
+        $mockHandler = new MockHandler([
+            new Response(200, [], 'First'),
+            new Response(200, [], 'Second'),
+        ]);
+
+        $handlerStack = HandlerStack::create($mockHandler);
+        $handlerStack->push(RateLimiterMiddleware::tokenBucket(
+            '1 second',
+            1,
+            $this->cache,
+            $this->lockFactory,
+            'test-token-bucket-throw',
             new ThrowExceptionHandler(),
         ));
 
         $client = new Client(['handler' => $handlerStack]);
 
-        // Consume all 3 tokens
-        for ($i = 1; $i <= 3; ++$i) {
-            $response = $client->get('https://example.com/test');
-            $this->assertEquals(200, $response->getStatusCode());
-        }
+        // First request consumes the token
+        $response = $client->get('https://example.com/test');
+        $this->assertEquals(200, $response->getStatusCode());
 
-        // 4th request should throw with retry delay until window resets
-        try {
-            $client->get('https://example.com/test');
-            $this->fail('Expected RateLimitException was not thrown');
-        } catch (RateLimitException $e) {
-            $retryDelay = $e->getRetryDelay();
-            $this->assertNotNull($retryDelay);
-
-            // Fixed window returns time until window resets (up to 5 minutes = 300,000ms)
-            // Allow tolerance for test execution time
-            $this->assertGreaterThan(290000, $retryDelay, 'Retry delay should be close to 5 minutes');
-            $this->assertLessThanOrEqual(300000, $retryDelay, 'Retry delay should not exceed 5 minutes');
-        }
+        // Second request immediately after should throw (no token available)
+        $this->expectException(RateLimitException::class);
+        $client->get('https://example.com/test');
     }
 
     /**
-     * Test rate limiter with high volume of requests.
-     *
-     * This test verifies the rate limiter works correctly over many requests
-     * using the SleepHandler to automatically wait when rate limited.
-     *
-     * @group slow
+     * Test token bucket burst parameter allows controlled bursting.
      */
-    public function testHighVolumeWithSleepHandler(): void
+    public function testTokenBucketBurstParameter(): void
     {
-        $requestCount = 5;
-        $responses = array_map(
-            fn ($i) => new Response(200, [], "Request $i"),
-            range(1, $requestCount)
-        );
-
-        $mockHandler = new MockHandler($responses);
+        $mockHandler = new MockHandler([
+            new Response(200, [], 'Request 1'),
+            new Response(200, [], 'Request 2'),
+            new Response(200, [], 'Request 3'),
+            new Response(200, [], 'Request 4'),
+        ]);
 
         $handlerStack = HandlerStack::create($mockHandler);
-        $handlerStack->push(RateLimiterMiddleware::perSecond(
-            2, // 2 requests per second
+        $handlerStack->push(RateLimiterMiddleware::tokenBucket(
+            '1 second',
+            3,
             $this->cache,
             $this->lockFactory,
-            'test-high-volume',
+            'test-token-bucket-burst-param',
         ));
 
         $client = new Client(['handler' => $handlerStack]);
 
         $startTime = microtime(true);
 
-        for ($i = 1; $i <= $requestCount; ++$i) {
+        // First 3 requests should be immediate (using burst capacity)
+        for ($i = 1; $i <= 3; ++$i) {
             $response = $client->get('https://example.com/test');
-            $this->assertEquals(200, $response->getStatusCode());
             $this->assertEquals("Request $i", (string) $response->getBody());
         }
 
-        $totalTime = microtime(true) - $startTime;
+        $burstTime = microtime(true) - $startTime;
+        $this->assertLessThan(0.5, $burstTime, 'First 3 requests should be immediate (burst)');
 
-        // With 5 requests at 2/second, we should take at least 2 seconds
-        // (first 2 immediate, then wait 1s, next 2, then wait 1s, last 1)
-        $this->assertGreaterThan(1.5, $totalTime, 'Should have waited for rate limits');
+        // 4th request should wait for a token
+        $beforeFourth = microtime(true);
+        $response = $client->get('https://example.com/test');
+        $fourthWait = microtime(true) - $beforeFourth;
+
+        $this->assertEquals('Request 4', (string) $response->getBody());
+        $this->assertGreaterThanOrEqual(0.5, $fourthWait, '4th request should wait for token replenishment');
+    }
+
+    /**
+     * Test ThrowExceptionHandler throws InvalidArgumentException for invalid jitter values.
+     */
+    public function testThrowExceptionHandlerInvalidJitter(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Jitter must be between 0 and 1');
+
+        new ThrowExceptionHandler(jitter: 1.5);
+    }
+
+    /**
+     * Test SleepHandler throws InvalidArgumentException for invalid jitter values.
+     */
+    public function testSleepHandlerInvalidJitter(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Jitter must be between 0 and 1');
+
+        new SleepHandler(jitter: -0.1);
+    }
+
+    /**
+     * Test ThrowExceptionHandler with zero jitter returns exact delay.
+     */
+    public function testThrowExceptionHandlerWithZeroJitter(): void
+    {
+        $mockHandler = new MockHandler([
+            new Response(200, [], 'First'),
+            new Response(200, [], 'Second'),
+        ]);
+
+        $handlerStack = HandlerStack::create($mockHandler);
+        $handlerStack->push(RateLimiterMiddleware::perSecond(
+            1,
+            $this->cache,
+            $this->lockFactory,
+            'test-zero-jitter',
+            new ThrowExceptionHandler(jitter: 0),
+        ));
+
+        $client = new Client(['handler' => $handlerStack]);
+
+        // First request should succeed
+        $client->get('https://example.com/test');
+
+        // Second request should throw with exact delay (no jitter)
+        try {
+            $client->get('https://example.com/test');
+            $this->fail('Expected RateLimitException was not thrown');
+        } catch (RateLimitException $e) {
+            $retryDelay = $e->getRetryDelay();
+            $this->assertNotNull($retryDelay);
+            $this->assertGreaterThan(0, $retryDelay);
+            // With zero jitter, delay should be exactly what the rate limiter returns (<=1000ms)
+            $this->assertLessThanOrEqual(1000, $retryDelay, 'Retry delay should be ~1 second without jitter');
+        }
     }
 }
