@@ -1,6 +1,6 @@
 {
     "name": "recranet/guzzle-rate-limiter-middleware",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Thread-safe Guzzle rate limiter middleware using Symfony RateLimiter",
     "type": "library",
     "license": "MIT",
