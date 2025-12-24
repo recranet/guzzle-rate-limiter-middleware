@@ -7,7 +7,6 @@ A thread-safe rate limiter middleware for Guzzle using Symfony RateLimiter with 
 - Thread-safe rate limiting using distributed locks
 - Multiple rate limiting strategies: sliding window and token bucket
 - Configurable handlers for rate limit exceeded scenarios
-- Built-in jitter to prevent thundering herd problems
 - Works across multiple processes and servers
 
 ## Why This Package?
@@ -91,7 +90,6 @@ Blocks the process until the rate limit window resets, then retries automaticall
 use Recranet\GuzzleRateLimiterMiddleware\Handler\SleepHandler;
 
 $handler = new SleepHandler(
-    jitter: 0.2,    // Add 0-20% random delay (default)
     min: 0,         // Minimum delay in ms
     max: 300000,    // Maximum delay in ms (5 minutes)
 );
@@ -108,7 +106,6 @@ use Recranet\GuzzleRateLimiterMiddleware\Handler\ThrowExceptionHandler;
 use Recranet\GuzzleRateLimiterMiddleware\Exception\RateLimitException;
 
 $handler = new ThrowExceptionHandler(
-    jitter: 0.2,
     min: 0,
     max: 300000,
 );

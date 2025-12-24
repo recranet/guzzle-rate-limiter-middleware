@@ -127,9 +127,9 @@ class RateLimiterMiddlewareTest extends TestCase
     }
 
     /**
-     * Test that RateLimitException contains retry delay with jitter applied.
+     * Test that RateLimitException contains retry delay.
      */
-    public function testRateLimitExceptionContainsRetryDelayWithJitter(): void
+    public function testRateLimitExceptionContainsRetryDelay(): void
     {
         $mockHandler = new MockHandler([
             new Response(200, [], 'First'),
@@ -150,7 +150,7 @@ class RateLimiterMiddlewareTest extends TestCase
         // First request should succeed
         $client->get('https://example.com/test');
 
-        // Second request should throw with retry delay (with jitter applied)
+        // Second request should throw with retry delay
         try {
             $client->get('https://example.com/test');
             $this->fail('Expected RateLimitException was not thrown');
@@ -158,8 +158,7 @@ class RateLimiterMiddlewareTest extends TestCase
             $retryDelay = $e->getRetryDelay();
             $this->assertNotNull($retryDelay);
             $this->assertGreaterThan(0, $retryDelay);
-            // With 20% jitter, delay could be up to 1200ms (1000 * 1.2)
-            $this->assertLessThanOrEqual(1200, $retryDelay, 'Retry delay should be ~1 second + jitter');
+            $this->assertLessThanOrEqual(1000, $retryDelay, 'Retry delay should be ~1 second');
         }
     }
 
@@ -430,62 +429,4 @@ class RateLimiterMiddlewareTest extends TestCase
         $this->assertGreaterThanOrEqual(0.5, $fourthWait, '4th request should wait for token replenishment');
     }
 
-    /**
-     * Test ThrowExceptionHandler throws InvalidArgumentException for invalid jitter values.
-     */
-    public function testThrowExceptionHandlerInvalidJitter(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Jitter must be between 0 and 1');
-
-        new ThrowExceptionHandler(jitter: 1.5);
-    }
-
-    /**
-     * Test SleepHandler throws InvalidArgumentException for invalid jitter values.
-     */
-    public function testSleepHandlerInvalidJitter(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Jitter must be between 0 and 1');
-
-        new SleepHandler(jitter: -0.1);
-    }
-
-    /**
-     * Test ThrowExceptionHandler with zero jitter returns exact delay.
-     */
-    public function testThrowExceptionHandlerWithZeroJitter(): void
-    {
-        $mockHandler = new MockHandler([
-            new Response(200, [], 'First'),
-            new Response(200, [], 'Second'),
-        ]);
-
-        $handlerStack = HandlerStack::create($mockHandler);
-        $handlerStack->push(RateLimiterMiddleware::perSecond(
-            1,
-            $this->cache,
-            $this->lockFactory,
-            'test-zero-jitter',
-            new ThrowExceptionHandler(jitter: 0),
-        ));
-
-        $client = new Client(['handler' => $handlerStack]);
-
-        // First request should succeed
-        $client->get('https://example.com/test');
-
-        // Second request should throw with exact delay (no jitter)
-        try {
-            $client->get('https://example.com/test');
-            $this->fail('Expected RateLimitException was not thrown');
-        } catch (RateLimitException $e) {
-            $retryDelay = $e->getRetryDelay();
-            $this->assertNotNull($retryDelay);
-            $this->assertGreaterThan(0, $retryDelay);
-            // With zero jitter, delay should be exactly what the rate limiter returns (<=1000ms)
-            $this->assertLessThanOrEqual(1000, $retryDelay, 'Retry delay should be ~1 second without jitter');
-        }
-    }
 }

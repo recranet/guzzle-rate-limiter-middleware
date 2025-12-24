@@ -14,5 +14,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Factory methods: `perSecond()`, `perMinute()`, `perXSeconds()`, `perXMinutes()`, `tokenBucket()`
 - `SleepHandler` for blocking until rate limit resets
 - `ThrowExceptionHandler` for throwing `RateLimitException`
-- Configurable jitter to prevent thundering herd problems
 - Support for any PSR-6 cache implementation
